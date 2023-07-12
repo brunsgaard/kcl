@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -19,6 +20,9 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
+	"golang.org/x/oauth2/google"
+	"google.golang.org/api/idtoken"
+	"google.golang.org/api/option"
 
 	"github.com/aws/aws-sdk-go/aws/session"
 
@@ -26,6 +30,7 @@ import (
 	"github.com/twmb/franz-go/pkg/kmsg"
 	"github.com/twmb/franz-go/pkg/kversion"
 	"github.com/twmb/franz-go/pkg/sasl/aws"
+	"github.com/twmb/franz-go/pkg/sasl/oauth"
 	"github.com/twmb/franz-go/pkg/sasl/plain"
 	"github.com/twmb/franz-go/pkg/sasl/scram"
 
@@ -426,7 +431,44 @@ func (c *Client) maybeAddSASL() error {
 				SessionToken: creds.SessionToken,
 			}, nil
 		})))
+	case "gcloudadc":
+		c.AddOpt(kgo.SASL(
+			oauth.Oauth(func(context.Context) (oauth.Auth, error) {
+				ctx := context.Background()
+				creds, err := google.FindDefaultCredentials(ctx)
+				if err != nil {
+					return oauth.Auth{}, err
+				}
+				var f struct {
+					Type string `json:"type"`
+				}
+				if err := json.Unmarshal(creds.JSON, &f); err != nil {
+					return oauth.Auth{}, err
+				}
+				switch f.Type {
 
+				case "authorized_user":
+					t, err := creds.TokenSource.Token()
+					if err != nil {
+						return oauth.Auth{}, err
+					}
+					if t.Extra("id_token") == nil {
+						return oauth.Auth{}, errors.New("could not find id_token")
+					}
+					return oauth.Auth{Token: t.Extra("id_token").(string)}, nil
+				default:
+					ts, err := idtoken.NewTokenSource(ctx, "kaas", option.WithCredentials(creds))
+					if err != nil {
+						return oauth.Auth{}, err
+					}
+					t, err := ts.Token()
+					if err != nil {
+						return oauth.Auth{}, err
+					}
+					return oauth.Auth{Token: t.AccessToken}, nil
+				}
+			}),
+		))
 	default:
 		return fmt.Errorf("unrecognized / unhandled sasl method %q", c.cfg.SASL.Method)
 	}
