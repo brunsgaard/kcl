@@ -439,15 +439,19 @@ func (c *Client) maybeAddSASL() error {
 				if err != nil {
 					return oauth.Auth{}, err
 				}
-				var f struct {
-					Type string `json:"type"`
-				}
-				if err := json.Unmarshal(creds.JSON, &f); err != nil {
-					return oauth.Auth{}, err
-				}
-				switch f.Type {
 
-				case "authorized_user":
+				checkAuthorizedUser := func() bool {
+					var f struct {
+						Type string `json:"type"`
+					}
+					if err := json.Unmarshal(creds.JSON, &f); err != nil || f.Type != "authorized_user" {
+						return false
+					}
+					return true
+
+				}
+
+				if checkAuthorizedUser() {
 					t, err := creds.TokenSource.Token()
 					if err != nil {
 						return oauth.Auth{}, err
@@ -456,7 +460,7 @@ func (c *Client) maybeAddSASL() error {
 						return oauth.Auth{}, errors.New("could not find id_token")
 					}
 					return oauth.Auth{Token: t.Extra("id_token").(string)}, nil
-				default:
+				} else {
 					ts, err := idtoken.NewTokenSource(ctx, "kaas", option.WithCredentials(creds))
 					if err != nil {
 						return oauth.Auth{}, err
@@ -466,6 +470,7 @@ func (c *Client) maybeAddSASL() error {
 						return oauth.Auth{}, err
 					}
 					return oauth.Auth{Token: t.AccessToken}, nil
+
 				}
 			}),
 		))
